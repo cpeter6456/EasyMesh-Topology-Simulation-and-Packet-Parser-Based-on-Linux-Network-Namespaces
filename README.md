@@ -3,6 +3,12 @@
 ## 🌐 模擬網路拓撲架構 (Network Topology)
 
 本專案在單一 Linux 環境下，利用 `Network Namespaces` 與 `veth pair` 模擬出一個三節點的 EasyMesh 鏈狀拓撲（Chain Topology），各節點之間皆為純二層（Layer 2）連線。
+veth（Virtual Ethernet，虛擬乙太網
+如
+ip link add c_to_a1 type veth peer name a1_to_c
+
+ip link set c_to_a1 netns Controller
+ip link set a1_to_c netns Agent_1
 
 ```mermaid
 graph TD

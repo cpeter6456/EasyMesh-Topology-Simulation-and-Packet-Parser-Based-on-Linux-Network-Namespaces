@@ -4,10 +4,17 @@
 
 本專案在單一 Linux 環境下，利用 `Network Namespaces` 與 `veth pair` 模擬出一個三節點的 EasyMesh 鏈狀拓撲（Chain Topology），各節點之間皆為純二層（Layer 2）連線。
 veth（Virtual Ethernet，虛擬乙太網
+
 如
+在  setup_mesh_env.sh 腳本中，這行指令就是在製造網路線
 ip link add c_to_a1 type veth peer name a1_to_c
 
+這裡製造了一條網路線，兩端的名稱分別叫 c_to_a1 和 a1_to_c
+
+隨後，腳本用這兩行指令把網路線的兩端分別插進不同的房間：
+
 ip link set c_to_a1 netns Controller
+
 ip link set a1_to_c netns Agent_1
 
 ```mermaid

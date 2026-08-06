@@ -1,0 +1,63 @@
+#ifndef EASYMESH_DEFS_H
+#define EASYMESH_DEFS_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define IEEE1905_ETHERTYPE 0x893A
+#define IEEE1905_MULTICAST_MAC {0x01, 0x80, 0xC2, 0x00, 0x00, 0x13}
+
+#define MAC_ADDR_LEN 6
+#define MAX_CMDU_SIZE 1500
+#define MAX_TLVS 16
+#define MAX_NEIGHBORS 4
+
+enum ieee1905_msg_type {
+    MSG_TOPOLOGY_DISCOVERY = 0x0001,
+    MSG_TOPOLOGY_NOTIFICATION = 0x0002,
+    MSG_TOPOLOGY_QUERY = 0x0003,
+    MSG_TOPOLOGY_RESPONSE = 0x0004,
+    MSG_LINK_METRIC_QUERY = 0x0005,
+    MSG_LINK_METRIC_RESPONSE = 0x0006
+};
+
+enum ieee1905_tlv_type {
+    TLV_END_OF_MESSAGE = 0,
+    TLV_AL_MAC_ADDRESS = 1,
+    TLV_SUPPORTED_ROLE = 2,
+    TLV_DEVICE_INFORMATION = 3,
+    TLV_NEIGHBOR_DEVICE = 4,
+    TLV_LINK_METRIC = 5
+};
+
+enum easymesh_role {
+    ROLE_CONTROLLER = 1,
+    ROLE_AGENT = 2
+};
+
+struct tlv_view {
+    uint8_t type;
+    uint16_t length;
+    const uint8_t *value;
+};
+
+struct cmdu_message {
+    uint16_t msg_type;
+    uint16_t msg_id;
+    uint8_t frag_id;
+    uint8_t flags;
+    struct tlv_view tlvs[MAX_TLVS];
+    size_t tlv_count;
+};
+
+struct node_config {
+    const char *name;
+    const char *ifname;
+    uint8_t al_mac[MAC_ADDR_LEN];
+    uint8_t role;
+    uint8_t neighbors[MAX_NEIGHBORS][MAC_ADDR_LEN];
+    size_t neighbor_count;
+    int32_t rssi_dbm;
+};
+
+#endif

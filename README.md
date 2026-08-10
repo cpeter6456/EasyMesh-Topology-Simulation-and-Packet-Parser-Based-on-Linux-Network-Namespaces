@@ -138,14 +138,22 @@ EASYMESH_RSSI=-60 ./bin/easymesh-agent agent1 --once
 ./bin/easymesh-agent agent2 --rssi -70 --once
 ```
 
-Agent 會週期性送出 `Link Metric Response`，每一筆都攜帶目前 RSSI。Controller 因而能收到 Agent_1 ↔ Controller、Agent_2 ↔ Controller 與 Agent_1 ↔ Agent_2 的狀態，並在 log 即時顯示更新，例如：
+Agent 啟動時會完成一次 Discovery、Topology 與 Link Metric 同步；後續每 30 秒才送一次 `Link Metric Response`。每一筆都攜帶目前 RSSI。Controller 因而能收到 Agent_1 ↔ Controller、Agent_2 ↔ Controller 與 Agent_1 ↔ Agent_2 的狀態，並只在首次收到或 RSSI 值改變時輸出一行，例如：
 
 ```text
 [Mesh status] Agent_1 <-> Controller: RSSI -60 dBm (updated)
 [Mesh status] Agent_1 <-> Agent_2: RSSI -60 dBm (updated)
 ```
 
-重新以不同 `--rssi` 值啟動 Agent，即可看到對應連線狀態更新。
+若 RSSI 與上次回報相差至少 5 dB，Agent 會在一秒內立即回報。可用 `--rssi-file` 在不重啟 Agent 的情況下模擬 RSSI 改變：
+
+```bash
+printf '%s\n' -60 > /tmp/agent1.rssi
+./bin/easymesh-agent agent1 --rssi-file /tmp/agent1.rssi
+
+# 變更至少 5 dB 後，Controller 會立即顯示狀態更新。
+printf '%s\n' -66 > /tmp/agent1.rssi
+```
 
 ## 自動驗證
 

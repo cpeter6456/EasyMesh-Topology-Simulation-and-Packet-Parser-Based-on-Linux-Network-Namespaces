@@ -6,7 +6,7 @@
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s agent1|agent2 [--once] [--rssi <dbm>]\n", prog);
+    fprintf(stderr, "usage: %s agent1|agent2 [--once] [--rssi <dbm>] [--rssi-file <path>]\n", prog);
 }
 
 static int parse_rssi(const char *text, int *value)
@@ -44,6 +44,11 @@ int main(int argc, char **argv)
             once = 1;
         } else if (strcmp(argv[i], "--rssi") == 0) {
             if (i + 1 >= argc || parse_rssi(argv[++i], &rssi) < 0) {
+                usage(argv[0]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--rssi-file") == 0) {
+            if (i + 1 >= argc || setenv("EASYMESH_RSSI_FILE", argv[++i], 1) < 0) {
                 usage(argv[0]);
                 return 1;
             }

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static const uint8_t multicast_mac[MAC_ADDR_LEN] = IEEE1905_MULTICAST_MAC;
@@ -158,7 +159,30 @@ static const char *node_name_for_mac(const uint8_t mac[MAC_ADDR_LEN])
     return "Unknown";
 }
 
-static void print_link_status(const uint8_t reporter[MAC_ADDR_LEN],
+static int link_status_changed(struct link_status statuses[MAX_LINK_STATUS],
+                               const uint8_t reporter[MAC_ADDR_LEN],
+                               const uint8_t neighbor[MAC_ADDR_LEN], int32_t rssi)
+{
+    for (size_t i = 0; i < MAX_LINK_STATUS; i++) {
+        if (statuses[i].valid && memcmp(statuses[i].reporter, reporter, MAC_ADDR_LEN) == 0 &&
+            memcmp(statuses[i].neighbor, neighbor, MAC_ADDR_LEN) == 0) {
+            if (statuses[i].rssi_dbm == rssi) return 0;
+            statuses[i].rssi_dbm = rssi;
+            return 1;
+        }
+        if (!statuses[i].valid) {
+            memcpy(statuses[i].reporter, reporter, MAC_ADDR_LEN);
+            memcpy(statuses[i].neighbor, neighbor, MAC_ADDR_LEN);
+            statuses[i].rssi_dbm = rssi;
+            statuses[i].valid = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void print_link_status(struct link_status statuses[MAX_LINK_STATUS],
+                              const uint8_t reporter[MAC_ADDR_LEN],
                               const struct cmdu_message *msg)
 {
     for (size_t i = 0; i < msg->tlv_count; i++) {
@@ -167,9 +191,11 @@ static void print_link_status(const uint8_t reporter[MAC_ADDR_LEN],
 
         if (tlv->type != TLV_LINK_METRIC || tlv->length != 14) continue;
         memcpy(&rssi, tlv->value + MAC_ADDR_LEN + 4, sizeof(rssi));
-        printf("[Mesh status] %s <-> %s: RSSI %d dBm (updated)\n",
-               node_name_for_mac(reporter), node_name_for_mac(tlv->value),
-               (int32_t)ntohl(rssi));
+        int32_t rssi_dbm = (int32_t)ntohl(rssi);
+        if (link_status_changed(statuses, reporter, tlv->value, rssi_dbm)) {
+            printf("[Mesh status] %s <-> %s: RSSI %d dBm (updated)\n",
+                   node_name_for_mac(reporter), node_name_for_mac(tlv->value), rssi_dbm);
+        }
     }
 }
 
@@ -189,6 +215,7 @@ static int open_interfaces(const struct node_config *node,
 int run_controller(const struct node_config *node)
 {
     int fds[MAX_INTERFACES];
+    struct link_status statuses[MAX_LINK_STATUS] = {0};
 
     if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
@@ -215,9 +242,8 @@ int run_controller(const struct node_config *node)
             struct cmdu_message msg;
             if (!(pfds[i].revents & POLLIN) || receive_one(fds[i], src_mac, &msg) < 0 ||
                 memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) continue;
-            print_rx(node, src_mac, &msg);
             if (msg.msg_type == MSG_LINK_METRIC_RESPONSE) {
-                print_link_status(src_mac, &msg);
+                print_link_status(statuses, src_mac, &msg);
             } else if (msg.msg_type == MSG_TOPOLOGY_DISCOVERY ||
                        msg.msg_type == MSG_TOPOLOGY_QUERY ||
                        msg.msg_type == MSG_TOPOLOGY_NOTIFICATION) {
@@ -286,10 +312,38 @@ static int poll_for_replies(const int fds[MAX_INTERFACES], const struct node_con
     return 0;
 }
 
-int run_agent(const struct node_config *node, int once)
+static int read_rssi_file(const char *path, int32_t *rssi_dbm)
+{
+    char line[32];
+    char *end = NULL;
+    long value;
+    FILE *file = fopen(path, "r");
+
+    if (file == NULL) return -1;
+    if (fgets(line, sizeof(line), file) == NULL) {
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+    value = strtol(line, &end, 10);
+    if (line == end || (*end != '\n' && *end != '\0') || value < -127 || value > 127) return -1;
+    *rssi_dbm = (int32_t)value;
+    return 0;
+}
+
+static void send_metric_report(const int fds[MAX_INTERFACES],
+                               const struct node_config *node, uint16_t *msg_id)
+{
+    send_built_cmdu_all(fds, node, cmdu_build_link_metric_response, (*msg_id)++);
+}
+
+int run_agent(struct node_config *node, int once)
 {
     int fds[MAX_INTERFACES];
     uint16_t msg_id = 1000;
+    int32_t last_reported_rssi;
+    const char *rssi_file = getenv("EASYMESH_RSSI_FILE");
+    time_t next_metric_report;
 
     if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
@@ -299,26 +353,35 @@ int run_agent(const struct node_config *node, int once)
     printf("[%s] started on %s and %s, AL MAC ready\n", node->name,
            node->ifnames[0], node->ifnames[1]);
 
+    /* One complete topology synchronization occurs only when the Agent starts. */
+    send_built_cmdu_all(fds, node, cmdu_build_discovery, msg_id++);
+    send_built_cmdu_all(fds, node, cmdu_build_topology_query, msg_id++);
+    send_built_cmdu_all(fds, node, cmdu_build_topology_notification, msg_id++);
+    send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
+    send_metric_report(fds, node, &msg_id);
+    last_reported_rssi = node->rssi_dbm;
+    next_metric_report = time(NULL) + 30;
+
     do {
-        sleep(3);
-        printf("[%s] TX Discovery\n", node->name);
-        send_built_cmdu_all(fds, node, cmdu_build_discovery, msg_id++);
+        int32_t file_rssi;
+        time_t now;
 
-        printf("[%s] TX Topology Query\n", node->name);
-        send_built_cmdu_all(fds, node, cmdu_build_topology_query, msg_id++);
+        poll_for_replies(fds, node, once ? 3000 : 1000);
+        if (once) break;
 
-        printf("[%s] TX Topology Notification\n", node->name);
-        send_built_cmdu_all(fds, node, cmdu_build_topology_notification, msg_id++);
-
-        printf("[%s] TX Link Metric Query\n", node->name);
-        send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
-
-        /* Periodic reports let the controller refresh every direct mesh link. */
-        printf("[%s] TX Link Metric Response (RSSI report)\n", node->name);
-        send_built_cmdu_all(fds, node, cmdu_build_link_metric_response, msg_id++);
-
-        fflush(stdout);
-        poll_for_replies(fds, node, once ? 3000 : 5000);
+        if (rssi_file != NULL && read_rssi_file(rssi_file, &file_rssi) == 0) {
+            node->rssi_dbm = file_rssi;
+        }
+        now = time(NULL);
+        if (abs(node->rssi_dbm - last_reported_rssi) >= 5) {
+            send_metric_report(fds, node, &msg_id);
+            last_reported_rssi = node->rssi_dbm;
+            next_metric_report = now + 30;
+        } else if (now >= next_metric_report) {
+            send_metric_report(fds, node, &msg_id);
+            last_reported_rssi = node->rssi_dbm;
+            next_metric_report = now + 30;
+        }
     } while (!once);
 
     for (size_t i = 0; i < node->interface_count; i++) close(fds[i]);

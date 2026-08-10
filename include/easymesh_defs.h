@@ -12,6 +12,7 @@
 #define MAX_TLVS 16
 #define MAX_NEIGHBORS 4
 #define MAX_INTERFACES 2
+#define MAX_LINK_STATUS 6
 
 enum ieee1905_msg_type {
     MSG_TOPOLOGY_DISCOVERY = 0x0001,
@@ -60,6 +61,13 @@ struct node_config {
     uint8_t neighbors[MAX_NEIGHBORS][MAC_ADDR_LEN];
     size_t neighbor_count;
     int32_t rssi_dbm;
+};
+
+struct link_status {
+    uint8_t reporter[MAC_ADDR_LEN];
+    uint8_t neighbor[MAC_ADDR_LEN];
+    int32_t rssi_dbm;
+    int valid;
 };
 
 #endif

@@ -15,7 +15,7 @@
 
 ## 拓撲架構
 
-三節點鏈狀拓撲如下：
+三節點全互連拓撲如下；每一對節點都有獨立的 veth link，因此 Controller、Agent_1、Agent_2 都可以直接交換 IEEE 1905.1 封包。
 
 - Controller: 02:00:00:00:00:01
 - Agent_1: 02:00:00:00:00:02
@@ -23,8 +23,9 @@
 
 ```mermaid
 graph TD
-    C[Controller] -->|c_to_a1| A1[Agent_1]
-    A1 -->|a1_to_a2| A2[Agent_2]
+    C[Controller] <-->|c_to_a1 / a1_to_c| A1[Agent_1]
+    C <-->|c_to_a2 / a2_to_c| A2[Agent_2]
+    A1 <-->|a1_to_a2 / a2_to_a1| A2
 ```
 
 ## 建置
@@ -79,8 +80,8 @@ sudo ./setup_mesh_env.sh setup
 這一步會建立：
 
 - 3 個 Network Namespace：Controller、Agent_1、Agent_2
-- 2 條 veth pair：controller ↔ agent1、agent1 ↔ agent2
-- 1 個 Linux Bridge：Agent_1 內的 `br-agent1`
+- 3 條 veth pair：controller ↔ agent1、controller ↔ agent2、agent1 ↔ agent2
+- 每個節點各有兩個獨立介面；不使用 Linux Bridge，避免三角形拓撲的 Layer-2 broadcast loop
 - 對應的 MAC 位址配置
 
 ### 3. 啟動 Controller 與兩個 Agent
@@ -136,6 +137,15 @@ Agent 可透過環境變數或參數設定 RSSI：
 EASYMESH_RSSI=-60 ./bin/easymesh-agent agent1 --once
 ./bin/easymesh-agent agent2 --rssi -70 --once
 ```
+
+Agent 會週期性送出 `Link Metric Response`，每一筆都攜帶目前 RSSI。Controller 因而能收到 Agent_1 ↔ Controller、Agent_2 ↔ Controller 與 Agent_1 ↔ Agent_2 的狀態，並在 log 即時顯示更新，例如：
+
+```text
+[Mesh status] Agent_1 <-> Controller: RSSI -60 dBm (updated)
+[Mesh status] Agent_1 <-> Agent_2: RSSI -60 dBm (updated)
+```
+
+重新以不同 `--rssi` 值啟動 Agent，即可看到對應連線狀態更新。
 
 ## 自動驗證
 

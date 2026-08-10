@@ -34,6 +34,8 @@ int main(void)
         fprintf(stderr, "failed to load agent1 config\n");
         return 1;
     }
+    if (check(node.interface_count == 2 && node.neighbor_count == 2,
+              "agent1 full-mesh configuration") < 0) return 1;
 
     if (cmdu_build_discovery(buf, sizeof(buf), &len, 1001, &node) < 0) {
         fprintf(stderr, "discovery build failed\n");

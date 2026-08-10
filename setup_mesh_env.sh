@@ -37,35 +37,35 @@ setup_topology() {
 
   echo "[3/4] 建立 veth pair..."
   ip link add c_to_a1 type veth peer name a1_to_c
+  ip link add c_to_a2 type veth peer name a2_to_c
   ip link add a1_to_a2 type veth peer name a2_to_a1
 
   ip link set c_to_a1 netns Controller
+  ip link set c_to_a2 netns Controller
   ip link set a1_to_c netns Agent_1
   ip link set a1_to_a2 netns Agent_1
+  ip link set a2_to_c netns Agent_2
   ip link set a2_to_a1 netns Agent_2
 
   echo "[4/4] 配置 MAC、Bridge 與介面狀態..."
   ip netns exec Controller ip link set lo up
   ip netns exec Controller ip link set c_to_a1 address 02:00:00:00:00:01
   ip netns exec Controller ip link set c_to_a1 up
+  ip netns exec Controller ip link set c_to_a2 up
 
   ip netns exec Agent_2 ip link set lo up
   ip netns exec Agent_2 ip link set a2_to_a1 address 02:00:00:00:00:03
+  ip netns exec Agent_2 ip link set a2_to_c up
   ip netns exec Agent_2 ip link set a2_to_a1 up
 
   ip netns exec Agent_1 ip link set lo up
   ip netns exec Agent_1 ip link set a1_to_c up
   ip netns exec Agent_1 ip link set a1_to_a2 up
-  ip netns exec Agent_1 ip link add br-agent1 type bridge
-  ip netns exec Agent_1 ip link set br-agent1 address 02:00:00:00:00:02
-  ip netns exec Agent_1 ip link set br-agent1 up
-  ip netns exec Agent_1 ip link set a1_to_c master br-agent1
-  ip netns exec Agent_1 ip link set a1_to_a2 master br-agent1
 
   echo "EasyMesh Lab Ready:"
-  echo "  Controller c_to_a1  02:00:00:00:00:01"
-  echo "  Agent_1    br-agent1 02:00:00:00:00:02"
-  echo "  Agent_2    a2_to_a1  02:00:00:00:00:03"
+  echo "  Controller c_to_a1/c_to_a2  02:00:00:00:00:01"
+  echo "  Agent_1    a1_to_c/a1_to_a2 02:00:00:00:00:02"
+  echo "  Agent_2    a2_to_c/a2_to_a1 02:00:00:00:00:03"
 }
 
 ensure_binaries() {

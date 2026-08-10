@@ -4,6 +4,7 @@
 #include "ethernet.h"
 #include "raw_socket.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -28,17 +29,22 @@ int node_config_from_name(const char *name, struct node_config *node)
 
     if (strcmp(name, "controller") == 0) {
         node->name = "Controller";
-        node->ifname = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "c_to_a1";
+        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "c_to_a1";
+        node->ifnames[1] = "c_to_a2";
+        node->interface_count = 2;
         node->role = ROLE_CONTROLLER;
         node->rssi_dbm = -35;
         copy_mac(node->al_mac, "02:00:00:00:00:01");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
+        copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:03");
         return 0;
     }
 
     if (strcmp(name, "agent1") == 0) {
         node->name = "Agent_1";
-        node->ifname = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "br-agent1";
+        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "a1_to_c";
+        node->ifnames[1] = "a1_to_a2";
+        node->interface_count = 2;
         node->role = ROLE_AGENT;
         node->rssi_dbm = -50;
         copy_mac(node->al_mac, "02:00:00:00:00:02");
@@ -49,10 +55,13 @@ int node_config_from_name(const char *name, struct node_config *node)
 
     if (strcmp(name, "agent2") == 0) {
         node->name = "Agent_2";
-        node->ifname = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "a2_to_a1";
+        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "a2_to_c";
+        node->ifnames[1] = "a2_to_a1";
+        node->interface_count = 2;
         node->role = ROLE_AGENT;
         node->rssi_dbm = -65;
         copy_mac(node->al_mac, "02:00:00:00:00:03");
+        copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:01");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
         return 0;
     }
@@ -61,6 +70,7 @@ int node_config_from_name(const char *name, struct node_config *node)
 }
 
 static int send_cmdu(int fd, const struct node_config *node,
+                     const char *ifname,
                      const uint8_t dst_mac[MAC_ADDR_LEN],
                      const uint8_t *cmdu, size_t cmdu_len)
 {
@@ -72,10 +82,11 @@ static int send_cmdu(int fd, const struct node_config *node,
         return -1;
     }
 
-    return raw_socket_send(fd, node->ifname, dst_mac, frame, frame_len);
+    return raw_socket_send(fd, ifname, dst_mac, frame, frame_len);
 }
 
 static int send_built_cmdu(int fd, const struct node_config *node,
+                           const char *ifname,
                            const uint8_t dst_mac[MAC_ADDR_LEN],
                            int (*builder)(uint8_t *, size_t, size_t *,
                                           uint16_t, const struct node_config *),
@@ -88,7 +99,19 @@ static int send_built_cmdu(int fd, const struct node_config *node,
         return -1;
     }
 
-    return send_cmdu(fd, node, dst_mac, cmdu, cmdu_len);
+    return send_cmdu(fd, node, ifname, dst_mac, cmdu, cmdu_len);
+}
+
+static void send_built_cmdu_all(const int fds[MAX_INTERFACES],
+                                const struct node_config *node,
+                                int (*builder)(uint8_t *, size_t, size_t *,
+                                               uint16_t, const struct node_config *),
+                                uint16_t msg_id)
+{
+    for (size_t i = 0; i < node->interface_count; i++) {
+        send_built_cmdu(fds[i], node, node->ifnames[i], multicast_mac,
+                        builder, msg_id);
+    }
 }
 
 static int receive_one(int fd, uint8_t src_mac[MAC_ADDR_LEN],
@@ -118,69 +141,113 @@ static void print_rx(const struct node_config *node,
 {
     char src[18];
     mac_to_string(src_mac, src, sizeof(src));
-    printf("\n[%s] RX from %s on %s\n", node->name, src, node->ifname);
+    printf("\n[%s] RX from %s\n", node->name, src);
     cmdu_print(msg);
     fflush(stdout);
 }
 
+static const char *node_name_for_mac(const uint8_t mac[MAC_ADDR_LEN])
+{
+    static const uint8_t controller[] = {0x02, 0, 0, 0, 0, 1};
+    static const uint8_t agent1[] = {0x02, 0, 0, 0, 0, 2};
+    static const uint8_t agent2[] = {0x02, 0, 0, 0, 0, 3};
+
+    if (memcmp(mac, controller, MAC_ADDR_LEN) == 0) return "Controller";
+    if (memcmp(mac, agent1, MAC_ADDR_LEN) == 0) return "Agent_1";
+    if (memcmp(mac, agent2, MAC_ADDR_LEN) == 0) return "Agent_2";
+    return "Unknown";
+}
+
+static void print_link_status(const uint8_t reporter[MAC_ADDR_LEN],
+                              const struct cmdu_message *msg)
+{
+    for (size_t i = 0; i < msg->tlv_count; i++) {
+        const struct tlv_view *tlv = &msg->tlvs[i];
+        uint32_t rssi;
+
+        if (tlv->type != TLV_LINK_METRIC || tlv->length != 14) continue;
+        memcpy(&rssi, tlv->value + MAC_ADDR_LEN + 4, sizeof(rssi));
+        printf("[Mesh status] %s <-> %s: RSSI %d dBm (updated)\n",
+               node_name_for_mac(reporter), node_name_for_mac(tlv->value),
+               (int32_t)ntohl(rssi));
+    }
+}
+
+static int open_interfaces(const struct node_config *node,
+                           int fds[MAX_INTERFACES])
+{
+    for (size_t i = 0; i < node->interface_count; i++) {
+        fds[i] = raw_socket_open(node->ifnames[i]);
+        if (fds[i] < 0) {
+            while (i > 0) close(fds[--i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int run_controller(const struct node_config *node)
 {
-    int fd = raw_socket_open(node->ifname);
+    int fds[MAX_INTERFACES];
 
-    if (fd < 0) {
+    if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
         return 1;
     }
 
-    printf("[%s] listening on %s for EtherType 0x%04X\n",
-           node->name, node->ifname, IEEE1905_ETHERTYPE);
+    printf("[%s] listening on %s and %s for EtherType 0x%04X\n",
+           node->name, node->ifnames[0], node->ifnames[1], IEEE1905_ETHERTYPE);
     fflush(stdout);
 
     for (;;) {
-        sleep(3);
-        uint8_t src_mac[MAC_ADDR_LEN];
-        struct cmdu_message msg;
-
-        if (receive_one(fd, src_mac, &msg) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            continue;
+        struct pollfd pfds[MAX_INTERFACES];
+        for (size_t i = 0; i < node->interface_count; i++) {
+            pfds[i].fd = fds[i];
+            pfds[i].events = POLLIN;
+            pfds[i].revents = 0;
         }
-        if (memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) {
-            continue;
+        if (poll(pfds, node->interface_count, -1) < 0) {
+            if (errno == EINTR) continue;
+            break;
         }
-
-        print_rx(node, src_mac, &msg);
-
-        if (msg.msg_type == MSG_TOPOLOGY_DISCOVERY ||
-            msg.msg_type == MSG_TOPOLOGY_QUERY ||
-            msg.msg_type == MSG_TOPOLOGY_NOTIFICATION) {
-            if (send_built_cmdu(fd, node, src_mac, cmdu_build_topology_response,
-                                msg.msg_id) == 0) {
-                printf("[%s] TX Topology Response\n", node->name);
-            }
-        } else if (msg.msg_type == MSG_LINK_METRIC_QUERY) {
-            if (send_built_cmdu(fd, node, src_mac, cmdu_build_link_metric_response,
-                                msg.msg_id) == 0) {
-                printf("[%s] TX Link Metric Response\n", node->name);
+        for (size_t i = 0; i < node->interface_count; i++) {
+            uint8_t src_mac[MAC_ADDR_LEN];
+            struct cmdu_message msg;
+            if (!(pfds[i].revents & POLLIN) || receive_one(fds[i], src_mac, &msg) < 0 ||
+                memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) continue;
+            print_rx(node, src_mac, &msg);
+            if (msg.msg_type == MSG_LINK_METRIC_RESPONSE) {
+                print_link_status(src_mac, &msg);
+            } else if (msg.msg_type == MSG_TOPOLOGY_DISCOVERY ||
+                       msg.msg_type == MSG_TOPOLOGY_QUERY ||
+                       msg.msg_type == MSG_TOPOLOGY_NOTIFICATION) {
+                send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
+                                cmdu_build_topology_response, msg.msg_id);
+            } else if (msg.msg_type == MSG_LINK_METRIC_QUERY) {
+                send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
+                                cmdu_build_link_metric_response, msg.msg_id);
             }
         }
         fflush(stdout);
     }
+
+    for (size_t i = 0; i < node->interface_count; i++) close(fds[i]);
+    return 1;
 }
 
-static int poll_for_replies(int fd, const struct node_config *node,
+static int poll_for_replies(const int fds[MAX_INTERFACES], const struct node_config *node,
                             int milliseconds)
 {
-    struct pollfd pfd;
     int elapsed = 0;
 
-    pfd.fd = fd;
-    pfd.events = POLLIN;
-
     while (elapsed < milliseconds) {
-        int rc = poll(&pfd, 1, 500);
+        struct pollfd pfds[MAX_INTERFACES];
+        for (size_t i = 0; i < node->interface_count; i++) {
+            pfds[i].fd = fds[i];
+            pfds[i].events = POLLIN;
+            pfds[i].revents = 0;
+        }
+        int rc = poll(pfds, node->interface_count, 500);
 
         if (rc < 0) {
             if (errno == EINTR) {
@@ -194,11 +261,11 @@ static int poll_for_replies(int fd, const struct node_config *node,
             continue;
         }
 
-        if (pfd.revents & POLLIN) {
+        for (size_t i = 0; i < node->interface_count; i++) {
             uint8_t src_mac[MAC_ADDR_LEN];
             struct cmdu_message msg;
 
-            if (receive_one(fd, src_mac, &msg) == 0) {
+            if ((pfds[i].revents & POLLIN) && receive_one(fds[i], src_mac, &msg) == 0) {
                 if (memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) {
                     continue;
                 }
@@ -206,10 +273,10 @@ static int poll_for_replies(int fd, const struct node_config *node,
 
                 if (msg.msg_type == MSG_TOPOLOGY_QUERY ||
                     msg.msg_type == MSG_TOPOLOGY_NOTIFICATION) {
-                    send_built_cmdu(fd, node, src_mac,
+                    send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
                                     cmdu_build_topology_response, msg.msg_id);
                 } else if (msg.msg_type == MSG_LINK_METRIC_QUERY) {
-                    send_built_cmdu(fd, node, src_mac,
+                    send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
                                     cmdu_build_link_metric_response, msg.msg_id);
                 }
             }
@@ -221,38 +288,39 @@ static int poll_for_replies(int fd, const struct node_config *node,
 
 int run_agent(const struct node_config *node, int once)
 {
-    int fd = raw_socket_open(node->ifname);
+    int fds[MAX_INTERFACES];
     uint16_t msg_id = 1000;
 
-    if (fd < 0) {
+    if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
         return 1;
     }
 
-    printf("[%s] started on %s, AL MAC ready\n", node->name, node->ifname);
+    printf("[%s] started on %s and %s, AL MAC ready\n", node->name,
+           node->ifnames[0], node->ifnames[1]);
 
     do {
         sleep(3);
         printf("[%s] TX Discovery\n", node->name);
-        send_built_cmdu(fd, node, multicast_mac,
-                        cmdu_build_discovery, msg_id++);
+        send_built_cmdu_all(fds, node, cmdu_build_discovery, msg_id++);
 
         printf("[%s] TX Topology Query\n", node->name);
-        send_built_cmdu(fd, node, multicast_mac,
-                        cmdu_build_topology_query, msg_id++);
+        send_built_cmdu_all(fds, node, cmdu_build_topology_query, msg_id++);
 
         printf("[%s] TX Topology Notification\n", node->name);
-        send_built_cmdu(fd, node, multicast_mac,
-                        cmdu_build_topology_notification, msg_id++);
+        send_built_cmdu_all(fds, node, cmdu_build_topology_notification, msg_id++);
 
         printf("[%s] TX Link Metric Query\n", node->name);
-        send_built_cmdu(fd, node, multicast_mac,
-                        cmdu_build_link_metric_query, msg_id++);
+        send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
+
+        /* Periodic reports let the controller refresh every direct mesh link. */
+        printf("[%s] TX Link Metric Response (RSSI report)\n", node->name);
+        send_built_cmdu_all(fds, node, cmdu_build_link_metric_response, msg_id++);
 
         fflush(stdout);
-        poll_for_replies(fd, node, once ? 3000 : 5000);
+        poll_for_replies(fds, node, once ? 3000 : 5000);
     } while (!once);
 
-    close(fd);
+    for (size_t i = 0; i < node->interface_count; i++) close(fds[i]);
     return 0;
 }

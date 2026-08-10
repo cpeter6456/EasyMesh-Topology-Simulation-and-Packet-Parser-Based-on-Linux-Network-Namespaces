@@ -187,12 +187,14 @@ int cmdu_build_link_metric_response(uint8_t *buf, size_t buf_len, size_t *len,
     }
 
     for (size_t i = 0; i < node->neighbor_count; i++) {
-        uint8_t metric[MAC_ADDR_LEN + 4];
+        uint8_t metric[MAC_ADDR_LEN + 8];
         uint32_t cost = 100u + (uint32_t)(node->rssi_dbm < 0 ? -node->rssi_dbm : node->rssi_dbm) + (uint32_t)i * 5u;
         uint32_t cost_net = htonl(cost);
+        uint32_t rssi_net = htonl((uint32_t)node->rssi_dbm);
 
         memcpy(metric, node->neighbors[i], MAC_ADDR_LEN);
         memcpy(metric + MAC_ADDR_LEN, &cost_net, sizeof(cost_net));
+        memcpy(metric + MAC_ADDR_LEN + sizeof(cost_net), &rssi_net, sizeof(rssi_net));
 
         if (tlv_put(buf, buf_len, &offset, TLV_LINK_METRIC,
                     metric, sizeof(metric)) < 0) {
@@ -230,12 +232,14 @@ void cmdu_print(const struct cmdu_message *msg)
             mac_to_string(tlv->value + 1, mac, sizeof(mac));
             printf(" role=%u al=%s neighbors=%u",
                    tlv->value[0], mac, tlv->value[7]);
-        } else if (tlv->type == TLV_LINK_METRIC && tlv->length == 10) {
-            uint32_t cost;
+        } else if (tlv->type == TLV_LINK_METRIC && tlv->length == 14) {
+            uint32_t cost, rssi;
 
             mac_to_string(tlv->value, mac, sizeof(mac));
             memcpy(&cost, tlv->value + MAC_ADDR_LEN, sizeof(cost));
-            printf(" neighbor=%s cost=%u", mac, ntohl(cost));
+            memcpy(&rssi, tlv->value + MAC_ADDR_LEN + sizeof(cost), sizeof(rssi));
+            printf(" neighbor=%s cost=%u rssi=%d dBm", mac, ntohl(cost),
+                   (int32_t)ntohl(rssi));
         }
         printf("\n");
     }

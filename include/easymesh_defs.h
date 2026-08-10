@@ -11,6 +11,7 @@
 #define MAX_CMDU_SIZE 1500
 #define MAX_TLVS 16
 #define MAX_NEIGHBORS 4
+#define MAX_INTERFACES 2
 
 enum ieee1905_msg_type {
     MSG_TOPOLOGY_DISCOVERY = 0x0001,
@@ -52,7 +53,8 @@ struct cmdu_message {
 
 struct node_config {
     const char *name;
-    const char *ifname;
+    const char *ifnames[MAX_INTERFACES];
+    size_t interface_count;
     uint8_t al_mac[MAC_ADDR_LEN];
     uint8_t role;
     uint8_t neighbors[MAX_NEIGHBORS][MAC_ADDR_LEN];

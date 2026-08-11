@@ -15,6 +15,8 @@
 
 static const uint8_t multicast_mac[MAC_ADDR_LEN] = IEEE1905_MULTICAST_MAC;
 
+static int read_rssi_file(const char *path, int32_t *rssi_dbm);
+
 static void copy_mac(uint8_t dst[MAC_ADDR_LEN], const char *src)
 {
     if (parse_mac(src, dst) < 0) {
@@ -34,10 +36,11 @@ int node_config_from_name(const char *name, struct node_config *node)
         node->ifnames[1] = "c_to_a2";
         node->interface_count = 2;
         node->role = ROLE_CONTROLLER;
-        node->rssi_dbm = -35;
         copy_mac(node->al_mac, "02:00:00:00:00:01");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
+        node->link_rssi_dbm[0] = -35;
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:03");
+        node->link_rssi_dbm[1] = -40;
         return 0;
     }
 
@@ -47,10 +50,11 @@ int node_config_from_name(const char *name, struct node_config *node)
         node->ifnames[1] = "a1_to_a2";
         node->interface_count = 2;
         node->role = ROLE_AGENT;
-        node->rssi_dbm = -50;
         copy_mac(node->al_mac, "02:00:00:00:00:02");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:01");
+        node->link_rssi_dbm[0] = -50;
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:03");
+        node->link_rssi_dbm[1] = -55;
         return 0;
     }
 
@@ -60,10 +64,11 @@ int node_config_from_name(const char *name, struct node_config *node)
         node->ifnames[1] = "a2_to_a1";
         node->interface_count = 2;
         node->role = ROLE_AGENT;
-        node->rssi_dbm = -65;
         copy_mac(node->al_mac, "02:00:00:00:00:03");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:01");
+        node->link_rssi_dbm[0] = -65;
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
+        node->link_rssi_dbm[1] = -60;
         return 0;
     }
 
@@ -115,14 +120,14 @@ static void send_built_cmdu_all(const int fds[MAX_INTERFACES],
     }
 }
 
-static int receive_one(int fd, uint8_t src_mac[MAC_ADDR_LEN],
+static int receive_one(int fd, uint8_t frame[MAX_CMDU_SIZE],
+                       uint8_t src_mac[MAC_ADDR_LEN],
                        struct cmdu_message *msg)
 {
-    uint8_t frame[MAX_CMDU_SIZE];
     uint8_t dst_mac[MAC_ADDR_LEN];
     const uint8_t *payload;
     size_t payload_len;
-    ssize_t n = raw_socket_recv(fd, frame, sizeof(frame));
+    ssize_t n = raw_socket_recv(fd, frame, MAX_CMDU_SIZE);
 
     if (n < 0) {
         return -1;
@@ -193,7 +198,7 @@ static void print_link_status(struct link_status statuses[MAX_LINK_STATUS],
         memcpy(&rssi, tlv->value + MAC_ADDR_LEN + 4, sizeof(rssi));
         int32_t rssi_dbm = (int32_t)ntohl(rssi);
         if (link_status_changed(statuses, reporter, tlv->value, rssi_dbm)) {
-            printf("[Mesh status] %s <-> %s: RSSI %d dBm (updated)\n",
+            printf("[Mesh status] %s RX from %s: RSSI %d dBm (updated)\n",
                    node_name_for_mac(reporter), node_name_for_mac(tlv->value), rssi_dbm);
         }
     }
@@ -212,10 +217,31 @@ static int open_interfaces(const struct node_config *node,
     return 0;
 }
 
-int run_controller(const struct node_config *node)
+static void refresh_link_rssi(struct node_config *node)
+{
+    for (size_t i = 0; i < node->neighbor_count; i++) {
+        int32_t file_rssi;
+        if (node->link_rssi_files[i] != NULL &&
+            read_rssi_file(node->link_rssi_files[i], &file_rssi) == 0) {
+            node->link_rssi_dbm[i] = file_rssi;
+        }
+    }
+}
+
+static void print_local_link_status(const struct node_config *node, size_t index)
+{
+    printf("[Mesh status] %s RX from %s: RSSI %d dBm (updated)\n",
+           node->name, node_name_for_mac(node->neighbors[index]),
+           node->link_rssi_dbm[index]);
+}
+
+int run_controller(struct node_config *node)
 {
     int fds[MAX_INTERFACES];
     struct link_status statuses[MAX_LINK_STATUS] = {0};
+    int32_t last_reported_rssi[MAX_NEIGHBORS];
+    time_t next_metric_query;
+    uint16_t msg_id = 1;
 
     if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
@@ -224,6 +250,11 @@ int run_controller(const struct node_config *node)
 
     printf("[%s] listening on %s and %s for EtherType 0x%04X\n",
            node->name, node->ifnames[0], node->ifnames[1], IEEE1905_ETHERTYPE);
+    refresh_link_rssi(node);
+    memcpy(last_reported_rssi, node->link_rssi_dbm, sizeof(last_reported_rssi));
+    for (size_t i = 0; i < node->neighbor_count; i++) print_local_link_status(node, i);
+    send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
+    next_metric_query = time(NULL) + 15;
     fflush(stdout);
 
     for (;;) {
@@ -233,14 +264,15 @@ int run_controller(const struct node_config *node)
             pfds[i].events = POLLIN;
             pfds[i].revents = 0;
         }
-        if (poll(pfds, node->interface_count, -1) < 0) {
+        if (poll(pfds, node->interface_count, 1000) < 0) {
             if (errno == EINTR) continue;
             break;
         }
         for (size_t i = 0; i < node->interface_count; i++) {
+            uint8_t frame[MAX_CMDU_SIZE];
             uint8_t src_mac[MAC_ADDR_LEN];
             struct cmdu_message msg;
-            if (!(pfds[i].revents & POLLIN) || receive_one(fds[i], src_mac, &msg) < 0 ||
+            if (!(pfds[i].revents & POLLIN) || receive_one(fds[i], frame, src_mac, &msg) < 0 ||
                 memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) continue;
             if (msg.msg_type == MSG_LINK_METRIC_RESPONSE) {
                 print_link_status(statuses, src_mac, &msg);
@@ -254,6 +286,22 @@ int run_controller(const struct node_config *node)
                                 cmdu_build_link_metric_response, msg.msg_id);
             }
         }
+        refresh_link_rssi(node);
+        time_t now = time(NULL);
+        int should_report = 0;
+        for (size_t i = 0; i < node->neighbor_count; i++) {
+            if (abs(node->link_rssi_dbm[i] - last_reported_rssi[i]) >= 5) {
+                print_local_link_status(node, i);
+                should_report = 1;
+            }
+        }
+        if (should_report) {
+            memcpy(last_reported_rssi, node->link_rssi_dbm, sizeof(last_reported_rssi));
+        }
+        if (now >= next_metric_query) {
+            send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
+            next_metric_query = now + 15;
+        }
         fflush(stdout);
     }
 
@@ -261,7 +309,7 @@ int run_controller(const struct node_config *node)
     return 1;
 }
 
-static int poll_for_replies(const int fds[MAX_INTERFACES], const struct node_config *node,
+static int poll_for_replies(const int fds[MAX_INTERFACES], struct node_config *node,
                             int milliseconds)
 {
     int elapsed = 0;
@@ -288,10 +336,11 @@ static int poll_for_replies(const int fds[MAX_INTERFACES], const struct node_con
         }
 
         for (size_t i = 0; i < node->interface_count; i++) {
+            uint8_t frame[MAX_CMDU_SIZE];
             uint8_t src_mac[MAC_ADDR_LEN];
             struct cmdu_message msg;
 
-            if ((pfds[i].revents & POLLIN) && receive_one(fds[i], src_mac, &msg) == 0) {
+            if ((pfds[i].revents & POLLIN) && receive_one(fds[i], frame, src_mac, &msg) == 0) {
                 if (memcmp(src_mac, node->al_mac, MAC_ADDR_LEN) == 0) {
                     continue;
                 }
@@ -302,6 +351,7 @@ static int poll_for_replies(const int fds[MAX_INTERFACES], const struct node_con
                     send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
                                     cmdu_build_topology_response, msg.msg_id);
                 } else if (msg.msg_type == MSG_LINK_METRIC_QUERY) {
+                    refresh_link_rssi(node);
                     send_built_cmdu(fds[i], node, node->ifnames[i], src_mac,
                                     cmdu_build_link_metric_response, msg.msg_id);
                 }
@@ -331,24 +381,17 @@ static int read_rssi_file(const char *path, int32_t *rssi_dbm)
     return 0;
 }
 
-static void send_metric_report(const int fds[MAX_INTERFACES],
-                               const struct node_config *node, uint16_t *msg_id)
-{
-    send_built_cmdu_all(fds, node, cmdu_build_link_metric_response, (*msg_id)++);
-}
-
 int run_agent(struct node_config *node, int once)
 {
     int fds[MAX_INTERFACES];
     uint16_t msg_id = 1000;
-    int32_t last_reported_rssi;
-    const char *rssi_file = getenv("EASYMESH_RSSI_FILE");
-    time_t next_metric_report;
 
     if (open_interfaces(node, fds) < 0) {
         perror("raw_socket_open");
         return 1;
     }
+
+    refresh_link_rssi(node);
 
     printf("[%s] started on %s and %s, AL MAC ready\n", node->name,
            node->ifnames[0], node->ifnames[1]);
@@ -357,31 +400,10 @@ int run_agent(struct node_config *node, int once)
     send_built_cmdu_all(fds, node, cmdu_build_discovery, msg_id++);
     send_built_cmdu_all(fds, node, cmdu_build_topology_query, msg_id++);
     send_built_cmdu_all(fds, node, cmdu_build_topology_notification, msg_id++);
-    send_built_cmdu_all(fds, node, cmdu_build_link_metric_query, msg_id++);
-    send_metric_report(fds, node, &msg_id);
-    last_reported_rssi = node->rssi_dbm;
-    next_metric_report = time(NULL) + 30;
 
     do {
-        int32_t file_rssi;
-        time_t now;
-
         poll_for_replies(fds, node, once ? 3000 : 1000);
         if (once) break;
-
-        if (rssi_file != NULL && read_rssi_file(rssi_file, &file_rssi) == 0) {
-            node->rssi_dbm = file_rssi;
-        }
-        now = time(NULL);
-        if (abs(node->rssi_dbm - last_reported_rssi) >= 5) {
-            send_metric_report(fds, node, &msg_id);
-            last_reported_rssi = node->rssi_dbm;
-            next_metric_report = now + 30;
-        } else if (now >= next_metric_report) {
-            send_metric_report(fds, node, &msg_id);
-            last_reported_rssi = node->rssi_dbm;
-            next_metric_report = now + 30;
-        }
     } while (!once);
 
     for (size_t i = 0; i < node->interface_count; i++) close(fds[i]);

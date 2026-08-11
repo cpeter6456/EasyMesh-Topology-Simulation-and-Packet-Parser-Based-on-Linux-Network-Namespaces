@@ -36,11 +36,19 @@ int main(void)
     }
     if (check(node.interface_count == 2 && node.neighbor_count == 2,
               "agent1 full-mesh configuration") < 0) return 1;
+    if (check(node.link_rssi_dbm[0] != node.link_rssi_dbm[1],
+              "agent1 per-link RSSI configuration") < 0) return 1;
 
     if (cmdu_build_discovery(buf, sizeof(buf), &len, 1001, &node) < 0) {
         fprintf(stderr, "discovery build failed\n");
         return 1;
     }
+
+    if (check(len >= 8 && buf[0] == 0 && buf[1] == 0 &&
+              buf[2] == 0 && buf[3] == 0 &&
+              buf[4] == 0x03 && buf[5] == 0xe9 &&
+              buf[6] == 0 && buf[7] == 0x80,
+              "IEEE 1905.1 CMDU header wire format") < 0) return 1;
 
     if (cmdu_parse(buf, len, &msg) < 0) {
         fprintf(stderr, "discovery parse failed\n");

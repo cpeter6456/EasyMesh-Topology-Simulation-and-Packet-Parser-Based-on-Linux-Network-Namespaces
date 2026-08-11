@@ -15,10 +15,10 @@
 #define MAX_LINK_STATUS 6
 
 enum ieee1905_msg_type {
-    MSG_TOPOLOGY_DISCOVERY = 0x0001,
-    MSG_TOPOLOGY_NOTIFICATION = 0x0002,
-    MSG_TOPOLOGY_QUERY = 0x0003,
-    MSG_TOPOLOGY_RESPONSE = 0x0004,
+    MSG_TOPOLOGY_DISCOVERY = 0x0000,
+    MSG_TOPOLOGY_NOTIFICATION = 0x0001,
+    MSG_TOPOLOGY_QUERY = 0x0002,
+    MSG_TOPOLOGY_RESPONSE = 0x0003,
     MSG_LINK_METRIC_QUERY = 0x0005,
     MSG_LINK_METRIC_RESPONSE = 0x0006
 };
@@ -60,7 +60,8 @@ struct node_config {
     uint8_t role;
     uint8_t neighbors[MAX_NEIGHBORS][MAC_ADDR_LEN];
     size_t neighbor_count;
-    int32_t rssi_dbm;
+    int32_t link_rssi_dbm[MAX_NEIGHBORS];
+    const char *link_rssi_files[MAX_NEIGHBORS];
 };
 
 struct link_status {

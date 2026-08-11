@@ -8,12 +8,16 @@
 #include <string.h>
 
 struct cmdu_header_wire {
+    uint8_t message_version;
+    uint8_t reserved;
     uint16_t msg_type;
     uint16_t msg_id;
     uint8_t frag_id;
     uint8_t flags;
-    uint16_t reserved;
 } __attribute__((packed));
+
+#define CMDU_MESSAGE_VERSION 0x00u
+#define CMDU_FLAG_LAST_FRAGMENT 0x80u
 
 static const char *msg_type_name(uint16_t type)
 {
@@ -54,11 +58,12 @@ int cmdu_begin(uint8_t *buf, size_t buf_len, size_t *offset,
     }
 
     struct cmdu_header_wire hdr;
+    hdr.message_version = CMDU_MESSAGE_VERSION;
+    hdr.reserved = 0;
     hdr.msg_type = htons(msg_type);
     hdr.msg_id = htons(msg_id);
     hdr.frag_id = 0;
-    hdr.flags = 0;
-    hdr.reserved = 0;
+    hdr.flags = CMDU_FLAG_LAST_FRAGMENT;
 
     memcpy(buf, &hdr, sizeof(hdr));
     *offset = sizeof(hdr);
@@ -188,9 +193,10 @@ int cmdu_build_link_metric_response(uint8_t *buf, size_t buf_len, size_t *len,
 
     for (size_t i = 0; i < node->neighbor_count; i++) {
         uint8_t metric[MAC_ADDR_LEN + 8];
-        uint32_t cost = 100u + (uint32_t)(node->rssi_dbm < 0 ? -node->rssi_dbm : node->rssi_dbm) + (uint32_t)i * 5u;
+        uint32_t cost = 100u + (uint32_t)(node->link_rssi_dbm[i] < 0 ?
+                                          -node->link_rssi_dbm[i] : node->link_rssi_dbm[i]);
         uint32_t cost_net = htonl(cost);
-        uint32_t rssi_net = htonl((uint32_t)node->rssi_dbm);
+        uint32_t rssi_net = htonl((uint32_t)node->link_rssi_dbm[i]);
 
         memcpy(metric, node->neighbors[i], MAC_ADDR_LEN);
         memcpy(metric + MAC_ADDR_LEN, &cost_net, sizeof(cost_net));

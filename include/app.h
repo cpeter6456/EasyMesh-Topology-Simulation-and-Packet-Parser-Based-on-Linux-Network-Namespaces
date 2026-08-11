@@ -3,7 +3,7 @@
 
 #include "easymesh_defs.h"
 
-int run_controller(const struct node_config *node);
+int run_controller(struct node_config *node);
 int run_agent(struct node_config *node, int once);
 int node_config_from_name(const char *name, struct node_config *node);
 

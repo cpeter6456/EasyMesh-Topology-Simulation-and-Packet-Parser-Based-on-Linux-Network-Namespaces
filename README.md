@@ -9,6 +9,7 @@
 - 使用 Linux Raw Socket（AF_PACKET）收送 EtherType 0x893A 的 Layer 2 Ethernet 封包
 - 以 Network Namespace、veth pair、Linux Bridge 建立可重現的三節點 Mesh 測試拓撲
 - 實作 Controller 與 Agent 的 Discovery、Topology、Link Metric 交換流程
+- CMDU 使用 IEEE 1905.1 header 格式（Version、Message Type、Message ID、Fragment、Flags），可由 Wireshark 正確辨識訊息類型
 - 提供可自動部署的 Shell Script，支援建立、啟動、停止、截包與清除
 - 支援以程式設定 RSSI 值，模擬 Link Metric 的變化
 - 以模組化設計分離 Raw Socket、Ethernet、CMDU、TLV、Application Layer，便於後續擴充
@@ -129,31 +130,49 @@ eth.type == 0x893a
 sudo ./setup_mesh_env.sh clean
 ```
 
-## RSSI 模擬
+## Per-link RSSI 模擬
 
-Agent 可透過環境變數或參數設定 RSSI：
-
-```bash
-EASYMESH_RSSI=-60 ./bin/easymesh-agent agent1 --once
-./bin/easymesh-agent agent2 --rssi -70 --once
-```
-
-Agent 啟動時會完成一次 Discovery、Topology 與 Link Metric 同步；後續每 30 秒才送一次 `Link Metric Response`。每一筆都攜帶目前 RSSI。Controller 因而能收到 Agent_1 ↔ Controller、Agent_2 ↔ Controller 與 Agent_1 ↔ Agent_2 的狀態，並只在首次收到或 RSSI 值改變時輸出一行，例如：
+RSSI 僅以接收端的「單一鄰居 link」為單位保存與回報；專案沒有 per-Agent、per-Controller 的共用 RSSI 設定。每個方向都有獨立檔案：
 
 ```text
-[Mesh status] Agent_1 <-> Controller: RSSI -60 dBm (updated)
-[Mesh status] Agent_1 <-> Agent_2: RSSI -60 dBm (updated)
+runtime/rssi/controller-from-agent1.rssi
+runtime/rssi/controller-from-agent2.rssi
+runtime/rssi/agent1-from-controller.rssi
+runtime/rssi/agent1-from-agent2.rssi
+runtime/rssi/agent2-from-controller.rssi
+runtime/rssi/agent2-from-agent1.rssi
 ```
 
-若 RSSI 與上次回報相差至少 5 dB，Agent 會在一秒內立即回報。可用 `--rssi-file` 在不重啟 Agent 的情況下模擬 RSSI 改變：
+`sudo ./setup_mesh_env.sh setup` 會建立上述檔案並填入預設值，`start` 會自動把每個檔案傳給對應節點。Controller 啟動時先送出一次 `Link Metric Query`，之後每 15 秒送一次；Agent 收到 Query 時會重新讀取自己的 per-link RSSI 檔案，並立刻回覆 `Link Metric Response`。Controller 只在首次收到或 RSSI 值改變時輸出一行，例如：
+
+```text
+[Mesh status] Agent_1 RX from Controller: RSSI -60 dBm (updated)
+[Mesh status] Agent_1 RX from Agent_2: RSSI -55 dBm (updated)
+```
+
+以下只更新 Agent_1 接收自 Controller 的量測，不影響 Agent_1 接收自 Agent_2 的量測；下一次 Controller 輪詢（最長約 15 秒）就會取得新值：
 
 ```bash
-printf '%s\n' -60 > /tmp/agent1.rssi
-./bin/easymesh-agent agent1 --rssi-file /tmp/agent1.rssi
-
-# 變更至少 5 dB 後，Controller 會立即顯示狀態更新。
-printf '%s\n' -66 > /tmp/agent1.rssi
+sudo sh -c 'printf "%s\n" -66 > runtime/rssi/agent1-from-controller.rssi'
 ```
+
+手動啟動時，單條 link 可以用 `--rssi-link` 或 `--rssi-link-file` 指定：
+
+```bash
+sudo ip netns exec Agent_1 ./bin/easymesh-agent agent1 \
+  --rssi-link controller -70 \
+  --rssi-link agent2 -55
+```
+
+Controller 也只接受 per-link RSSI 設定：
+
+```bash
+sudo sh -c 'printf "%s\n" -62 > /tmp/controller-from-agent1.rssi'
+sudo ip netns exec Controller ./bin/easymesh-controller \
+  --rssi-link-file agent1 /tmp/controller-from-agent1.rssi
+```
+
+Controller 的 per-link 值同樣會被保留並顯示狀態變更；對 Agent RSSI 的收集則固定由 Controller 每 15 秒 Query 一次、Agent 立即 Response。
 
 ## 自動驗證
 

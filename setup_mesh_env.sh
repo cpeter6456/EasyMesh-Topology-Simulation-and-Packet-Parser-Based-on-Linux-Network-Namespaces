@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${ROOT_DIR}/bin"
 LOG_DIR="${ROOT_DIR}/logs"
 CAPTURE_DIR="${ROOT_DIR}/captures"
+RSSI_DIR="${ROOT_DIR}/runtime/rssi"
 ETHERTYPE_FILTER="ether proto 0x893a"
 
 need_root() {
@@ -25,7 +26,14 @@ cleanup_netns() {
 
 setup_topology() {
   need_root
-  mkdir -p "$LOG_DIR" "$CAPTURE_DIR"
+  mkdir -p "$LOG_DIR" "$CAPTURE_DIR" "$RSSI_DIR"
+
+  printf '%s\n' -35 >"${RSSI_DIR}/controller-from-agent1.rssi"
+  printf '%s\n' -40 >"${RSSI_DIR}/controller-from-agent2.rssi"
+  printf '%s\n' -50 >"${RSSI_DIR}/agent1-from-controller.rssi"
+  printf '%s\n' -55 >"${RSSI_DIR}/agent1-from-agent2.rssi"
+  printf '%s\n' -65 >"${RSSI_DIR}/agent2-from-controller.rssi"
+  printf '%s\n' -60 >"${RSSI_DIR}/agent2-from-agent1.rssi"
 
   echo "[1/4] 清理舊的 Network Namespace..."
   cleanup_netns
@@ -78,16 +86,22 @@ ensure_binaries() {
 start_nodes() {
   need_root
   ensure_binaries
-  mkdir -p "$LOG_DIR"
+  mkdir -p "$LOG_DIR" "$RSSI_DIR"
 
   echo "啟動 Controller 與兩個 Agent..."
-  ip netns exec Controller "${BIN_DIR}/easymesh-controller" >"${LOG_DIR}/controller.log" 2>&1 &
+  ip netns exec Controller "${BIN_DIR}/easymesh-controller" \
+    --rssi-link-file agent1 "${RSSI_DIR}/controller-from-agent1.rssi" \
+    --rssi-link-file agent2 "${RSSI_DIR}/controller-from-agent2.rssi" >"${LOG_DIR}/controller.log" 2>&1 &
   echo $! >"${LOG_DIR}/controller.pid"
 
-  ip netns exec Agent_1 "${BIN_DIR}/easymesh-agent" agent1 >"${LOG_DIR}/agent1.log" 2>&1 &
+  ip netns exec Agent_1 "${BIN_DIR}/easymesh-agent" agent1 \
+    --rssi-link-file controller "${RSSI_DIR}/agent1-from-controller.rssi" \
+    --rssi-link-file agent2 "${RSSI_DIR}/agent1-from-agent2.rssi" >"${LOG_DIR}/agent1.log" 2>&1 &
   echo $! >"${LOG_DIR}/agent1.pid"
 
-  ip netns exec Agent_2 "${BIN_DIR}/easymesh-agent" agent2 >"${LOG_DIR}/agent2.log" 2>&1 &
+  ip netns exec Agent_2 "${BIN_DIR}/easymesh-agent" agent2 \
+    --rssi-link-file controller "${RSSI_DIR}/agent2-from-controller.rssi" \
+    --rssi-link-file agent1 "${RSSI_DIR}/agent2-from-agent1.rssi" >"${LOG_DIR}/agent2.log" 2>&1 &
   echo $! >"${LOG_DIR}/agent2.pid"
 
   echo "完成。Log:"
@@ -108,11 +122,21 @@ stop_nodes() {
 capture_packets() {
   need_root
   mkdir -p "$CAPTURE_DIR"
-  local out="${CAPTURE_DIR}/ieee1905_$(date +%Y%m%d_%H%M%S).pcap"
-
+  local out_c_to_a1="${CAPTURE_DIR}/ieee1905_$(date +%Y%m%d_%H%M%S)_c_to_a1.pcap"
+  local out_c_to_a2="${CAPTURE_DIR}/ieee1905_$(date +%Y%m%d_%H%M%S)_c_to_a2.pcap"
+  local out_a1_to_a2="${CAPTURE_DIR}/ieee1905_$(date +%Y%m%d_%H%M%S)_a1_to_a2.pcap"
   echo "擷取 Controller namespace 內 c_to_a1 上的 IEEE 1905.1 封包..."
-  echo "輸出: $out"
-  ip netns exec Controller tcpdump -i c_to_a1 -w "$out" "$ETHERTYPE_FILTER"
+  echo "輸出: $out_c_to_a1"
+  ip netns exec Controller tcpdump -U -i c_to_a1 -w "$out_c_to_a1" "$ETHERTYPE_FILTER" &
+
+  echo "擷取 Controller namespace 內 c_to_a2 上的 IEEE 1905.1 封包..."
+  echo "輸出: $out_c_to_a2"
+  ip netns exec Controller tcpdump -U -i c_to_a2 -w "$out_c_to_a2" "$ETHERTYPE_FILTER" &
+
+  echo "擷取 Agent_1 namespace 內 a1_to_a2 上的 IEEE 1905.1 封包..."
+  echo "輸出: $out_a1_to_a2"
+  ip netns exec Agent_1 tcpdump -U -i a1_to_a2 -w "$out_a1_to_a2" "$ETHERTYPE_FILTER" &
+
 }
 
 show_status() {

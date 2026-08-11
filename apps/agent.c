@@ -6,7 +6,7 @@
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s agent1|agent2 [--once] [--rssi <dbm>] [--rssi-file <path>]\n", prog);
+    fprintf(stderr, "usage: %s agent1|agent2 [--once] [--rssi-link <neighbor> <dbm>] [--rssi-link-file <neighbor> <path>]\n", prog);
 }
 
 static int parse_rssi(const char *text, int *value)
@@ -27,35 +27,29 @@ static int parse_rssi(const char *text, int *value)
     return 0;
 }
 
+static int link_index_for_name(const struct node_config *node, const char *name)
+{
+    uint8_t last_byte;
+
+    if (strcmp(name, "controller") == 0) last_byte = 1;
+    else if (strcmp(name, "agent1") == 0) last_byte = 2;
+    else if (strcmp(name, "agent2") == 0) last_byte = 3;
+    else return -1;
+
+    for (size_t i = 0; i < node->neighbor_count; i++) {
+        if (node->neighbors[i][MAC_ADDR_LEN - 1] == last_byte) return (int)i;
+    }
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
     struct node_config node;
     int once = 0;
-    int rssi = -1;
-    const char *env_rssi = getenv("EASYMESH_RSSI");
 
     if (argc < 2) {
         usage(argv[0]);
         return 1;
-    }
-
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--once") == 0) {
-            once = 1;
-        } else if (strcmp(argv[i], "--rssi") == 0) {
-            if (i + 1 >= argc || parse_rssi(argv[++i], &rssi) < 0) {
-                usage(argv[0]);
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--rssi-file") == 0) {
-            if (i + 1 >= argc || setenv("EASYMESH_RSSI_FILE", argv[++i], 1) < 0) {
-                usage(argv[0]);
-                return 1;
-            }
-        } else {
-            usage(argv[0]);
-            return 1;
-        }
     }
 
     if (node_config_from_name(argv[1], &node) < 0) {
@@ -63,14 +57,29 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (rssi < 0 && env_rssi != NULL && parse_rssi(env_rssi, &rssi) < 0) {
-        fprintf(stderr, "invalid EASYMESH_RSSI value: %s\n", env_rssi);
-        return 1;
-    }
-
-    if (rssi >= 0) {
-        node.rssi_dbm = rssi;
-        printf("[%s] configured RSSI %d dBm\n", argv[1], node.rssi_dbm);
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--once") == 0) {
+            once = 1;
+        } else if (strcmp(argv[i], "--rssi-link") == 0) {
+            int link_index;
+            int link_rssi;
+            if (i + 2 >= argc || (link_index = link_index_for_name(&node, argv[++i])) < 0 ||
+                parse_rssi(argv[++i], &link_rssi) < 0) {
+                usage(argv[0]);
+                return 1;
+            }
+            node.link_rssi_dbm[link_index] = link_rssi;
+        } else if (strcmp(argv[i], "--rssi-link-file") == 0) {
+            int link_index;
+            if (i + 2 >= argc || (link_index = link_index_for_name(&node, argv[++i])) < 0) {
+                usage(argv[0]);
+                return 1;
+            }
+            node.link_rssi_files[link_index] = argv[++i];
+        } else {
+            usage(argv[0]);
+            return 1;
+        }
     }
 
     return run_agent(&node, once);

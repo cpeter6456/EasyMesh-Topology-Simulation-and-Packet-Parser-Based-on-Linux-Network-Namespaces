@@ -11,8 +11,8 @@
 #define MAX_CMDU_SIZE 1500
 #define MAX_TLVS 16
 #define MAX_NEIGHBORS 4
-#define MAX_INTERFACES 2
-#define MAX_LINK_STATUS 6
+#define MAX_INTERFACES 3
+#define MAX_LINK_STATUS 12
 
 enum ieee1905_msg_type {
     MSG_TOPOLOGY_DISCOVERY = 0x0000,
@@ -26,10 +26,11 @@ enum ieee1905_msg_type {
 enum ieee1905_tlv_type {
     TLV_END_OF_MESSAGE = 0,
     TLV_AL_MAC_ADDRESS = 1,
-    TLV_SUPPORTED_ROLE = 2,
+    TLV_MAC_ADDRESS = 2,
     TLV_DEVICE_INFORMATION = 3,
-    TLV_NEIGHBOR_DEVICE = 4,
-    TLV_LINK_METRIC = 5
+    TLV_NEIGHBOR_DEVICE = 7,
+    TLV_LINK_METRIC_QUERY = 8,
+    TLV_RECEIVER_LINK_METRIC = 10
 };
 
 enum easymesh_role {

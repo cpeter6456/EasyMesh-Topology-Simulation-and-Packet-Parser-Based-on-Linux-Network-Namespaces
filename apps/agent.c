@@ -6,7 +6,7 @@
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s agent1|agent2 [--once] [--rssi-link <neighbor> <dbm>] [--rssi-link-file <neighbor> <path>]\n", prog);
+    fprintf(stderr, "usage: %s agent1|agent2|agent3 [--once] [--rssi-link <neighbor> <dbm>] [--rssi-link-file <neighbor> <path>]\n", prog);
 }
 
 static int parse_rssi(const char *text, int *value)
@@ -34,6 +34,7 @@ static int link_index_for_name(const struct node_config *node, const char *name)
     if (strcmp(name, "controller") == 0) last_byte = 1;
     else if (strcmp(name, "agent1") == 0) last_byte = 2;
     else if (strcmp(name, "agent2") == 0) last_byte = 3;
+    else if (strcmp(name, "agent3") == 0) last_byte = 4;
     else return -1;
 
     for (size_t i = 0; i < node->neighbor_count; i++) {

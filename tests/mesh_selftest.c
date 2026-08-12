@@ -34,10 +34,14 @@ int main(void)
         fprintf(stderr, "failed to load agent1 config\n");
         return 1;
     }
-    if (check(node.interface_count == 2 && node.neighbor_count == 2,
-              "agent1 full-mesh configuration") < 0) return 1;
+    if (check(node.interface_count == 1 && node.neighbor_count == 3,
+              "agent1 bridge and four-node topology configuration") < 0) return 1;
     if (check(node.link_rssi_dbm[0] != node.link_rssi_dbm[1],
               "agent1 per-link RSSI configuration") < 0) return 1;
+    if (node_config_from_name("agent3", &node) < 0 ||
+        check(node.interface_count == 1 && node.neighbor_count == 1,
+              "agent3 leaf-link configuration") < 0) return 1;
+    if (node_config_from_name("agent1", &node) < 0) return 1;
 
     if (cmdu_build_discovery(buf, sizeof(buf), &len, 1001, &node) < 0) {
         fprintf(stderr, "discovery build failed\n");
@@ -62,6 +66,11 @@ int main(void)
     if (check(tlv != NULL && tlv->length == MAC_ADDR_LEN, "AL MAC TLV") < 0) return 1;
     if (check(memcmp(tlv->value, node.al_mac, MAC_ADDR_LEN) == 0, "AL MAC value") < 0) return 1;
 
+    if (cmdu_build_topology_query(buf, sizeof(buf), &len, 1006, &node) < 0 ||
+        cmdu_parse(buf, len, &msg) < 0 ||
+        check(msg.msg_type == MSG_TOPOLOGY_QUERY && msg.tlv_count == 0,
+              "topology query has no mandatory TLVs") < 0) return 1;
+
     if (cmdu_build_topology_notification(buf, sizeof(buf), &len, 1002, &node) < 0) {
         fprintf(stderr, "topology notification build failed\n");
         return 1;
@@ -73,7 +82,8 @@ int main(void)
     }
 
     if (check(msg.msg_type == MSG_TOPOLOGY_NOTIFICATION, "topology notification type") < 0) return 1;
-    if (check(msg.tlv_count >= 2, "topology notification tlv count") < 0) return 1;
+    if (check(msg.tlv_count == 1 && msg.tlvs[0].type == TLV_AL_MAC_ADDRESS,
+              "topology notification TLV format") < 0) return 1;
 
     if (cmdu_build_topology_response(buf, sizeof(buf), &len, 1003, &node) < 0) {
         fprintf(stderr, "topology response build failed\n");
@@ -86,7 +96,8 @@ int main(void)
     }
 
     if (check(msg.msg_type == MSG_TOPOLOGY_RESPONSE, "topology response type") < 0) return 1;
-    if (check(msg.tlv_count >= 2, "topology response tlv count") < 0) return 1;
+    if (check(msg.tlv_count >= 1 && msg.tlvs[0].type == TLV_DEVICE_INFORMATION,
+              "topology response TLV format") < 0) return 1;
 
     if (cmdu_build_link_metric_response(buf, sizeof(buf), &len, 1004, &node) < 0) {
         fprintf(stderr, "link metric response build failed\n");
@@ -99,7 +110,22 @@ int main(void)
     }
 
     if (check(msg.msg_type == MSG_LINK_METRIC_RESPONSE, "link metric response type") < 0) return 1;
-    if (check(msg.tlv_count == node.neighbor_count + 2, "link metric tlv count") < 0) return 1;
+    if (check(msg.tlv_count == node.neighbor_count, "link metric tlv count") < 0) return 1;
+    if (check(msg.tlvs[0].type == TLV_RECEIVER_LINK_METRIC && msg.tlvs[0].length == 35,
+              "receiver link metric TLV format") < 0) return 1;
+    if (check(memcmp(msg.tlvs[0].value, node.al_mac, MAC_ADDR_LEN) == 0 &&
+              memcmp(msg.tlvs[0].value + MAC_ADDR_LEN, node.neighbors[0], MAC_ADDR_LEN) == 0 &&
+              (int8_t)msg.tlvs[0].value[34] == node.link_rssi_dbm[0],
+              "receiver link metric per-link values") < 0) return 1;
+
+    if (cmdu_build_link_metric_query(buf, sizeof(buf), &len, 1005, &node) < 0 ||
+        cmdu_parse(buf, len, &msg) < 0) {
+        fprintf(stderr, "link metric query build/parse failed\n");
+        return 1;
+    }
+    if (check(msg.tlv_count == 1 && msg.tlvs[0].type == TLV_LINK_METRIC_QUERY &&
+              msg.tlvs[0].length == 2 && msg.tlvs[0].value[0] == 0 &&
+              msg.tlvs[0].value[1] == 2, "link metric query TLV format") < 0) return 1;
 
     if (ethernet_build(frame, sizeof(frame), &frame_len, dst_mac, src_mac, buf, len) < 0) {
         fprintf(stderr, "ethernet build failed\n");

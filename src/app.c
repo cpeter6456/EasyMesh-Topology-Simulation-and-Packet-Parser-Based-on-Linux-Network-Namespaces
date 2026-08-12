@@ -46,15 +46,16 @@ int node_config_from_name(const char *name, struct node_config *node)
 
     if (strcmp(name, "agent1") == 0) {
         node->name = "Agent_1";
-        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "a1_to_c";
-        node->ifnames[1] = "a1_to_a2";
-        node->interface_count = 2;
+        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "br-agent1";
+        node->interface_count = 1;
         node->role = ROLE_AGENT;
         copy_mac(node->al_mac, "02:00:00:00:00:02");
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:01");
         node->link_rssi_dbm[0] = -50;
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:03");
         node->link_rssi_dbm[1] = -55;
+        copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:04");
+        node->link_rssi_dbm[2] = -58;
         return 0;
     }
 
@@ -69,6 +70,17 @@ int node_config_from_name(const char *name, struct node_config *node)
         node->link_rssi_dbm[0] = -65;
         copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
         node->link_rssi_dbm[1] = -60;
+        return 0;
+    }
+
+    if (strcmp(name, "agent3") == 0) {
+        node->name = "Agent_3";
+        node->ifnames[0] = override_ifname != NULL && *override_ifname != '\0' ? override_ifname : "a3_to_a1";
+        node->interface_count = 1;
+        node->role = ROLE_AGENT;
+        copy_mac(node->al_mac, "02:00:00:00:00:04");
+        copy_mac(node->neighbors[node->neighbor_count++], "02:00:00:00:00:02");
+        node->link_rssi_dbm[0] = -62;
         return 0;
     }
 
@@ -157,10 +169,12 @@ static const char *node_name_for_mac(const uint8_t mac[MAC_ADDR_LEN])
     static const uint8_t controller[] = {0x02, 0, 0, 0, 0, 1};
     static const uint8_t agent1[] = {0x02, 0, 0, 0, 0, 2};
     static const uint8_t agent2[] = {0x02, 0, 0, 0, 0, 3};
+    static const uint8_t agent3[] = {0x02, 0, 0, 0, 0, 4};
 
     if (memcmp(mac, controller, MAC_ADDR_LEN) == 0) return "Controller";
     if (memcmp(mac, agent1, MAC_ADDR_LEN) == 0) return "Agent_1";
     if (memcmp(mac, agent2, MAC_ADDR_LEN) == 0) return "Agent_2";
+    if (memcmp(mac, agent3, MAC_ADDR_LEN) == 0) return "Agent_3";
     return "Unknown";
 }
 
@@ -192,14 +206,14 @@ static void print_link_status(struct link_status statuses[MAX_LINK_STATUS],
 {
     for (size_t i = 0; i < msg->tlv_count; i++) {
         const struct tlv_view *tlv = &msg->tlvs[i];
-        uint32_t rssi;
+        int32_t rssi_dbm;
 
-        if (tlv->type != TLV_LINK_METRIC || tlv->length != 14) continue;
-        memcpy(&rssi, tlv->value + MAC_ADDR_LEN + 4, sizeof(rssi));
-        int32_t rssi_dbm = (int32_t)ntohl(rssi);
-        if (link_status_changed(statuses, reporter, tlv->value, rssi_dbm)) {
+        if (tlv->type != TLV_RECEIVER_LINK_METRIC || tlv->length != 35) continue;
+        rssi_dbm = (int8_t)tlv->value[34];
+        if (link_status_changed(statuses, reporter, tlv->value + MAC_ADDR_LEN, rssi_dbm)) {
             printf("[Mesh status] %s RX from %s: RSSI %d dBm (updated)\n",
-                   node_name_for_mac(reporter), node_name_for_mac(tlv->value), rssi_dbm);
+                   node_name_for_mac(reporter),
+                   node_name_for_mac(tlv->value + MAC_ADDR_LEN), rssi_dbm);
         }
     }
 }
@@ -393,8 +407,11 @@ int run_agent(struct node_config *node, int once)
 
     refresh_link_rssi(node);
 
-    printf("[%s] started on %s and %s, AL MAC ready\n", node->name,
-           node->ifnames[0], node->ifnames[1]);
+    printf("[%s] started on", node->name);
+    for (size_t i = 0; i < node->interface_count; i++) {
+        printf("%s%s", i == 0 ? " " : ", ", node->ifnames[i]);
+    }
+    printf(", AL MAC ready\n");
 
     /* One complete topology synchronization occurs only when the Agent starts. */
     send_built_cmdu_all(fds, node, cmdu_build_discovery, msg_id++);

@@ -7,26 +7,29 @@
 
 - 使用 C 實作 IEEE 1905.1 / EasyMesh CMDU 與 TLV 的編碼、解析與封包處理
 - 使用 Linux Raw Socket（AF_PACKET）收送 EtherType 0x893A 的 Layer 2 Ethernet 封包
-- 以 Network Namespace、veth pair、Linux Bridge 建立可重現的三節點 Mesh 測試拓撲
+- 以 Network Namespace、veth pair 建立可重現的四節點 Mesh 測試拓撲
 - 實作 Controller 與 Agent 的 Discovery、Topology、Link Metric 交換流程
 - CMDU 使用 IEEE 1905.1 header 格式（Version、Message Type、Message ID、Fragment、Flags），可由 Wireshark 正確辨識訊息類型
+- Link Metric Query 與 Response 使用 IEEE 1905.1 的 Link Metric Query TLV（all-neighbors 為 2-byte query value）與完整 Receiver Link Metric TLV（12-byte AL header + 23-byte interface-pair metric），避免 Wireshark 顯示 malformed 或 EOM 後的額外資料警告
 - 提供可自動部署的 Shell Script，支援建立、啟動、停止、截包與清除
 - 支援以程式設定 RSSI 值，模擬 Link Metric 的變化
 - 以模組化設計分離 Raw Socket、Ethernet、CMDU、TLV、Application Layer，便於後續擴充
 
 ## 拓撲架構
 
-三節點全互連拓撲如下；每一對節點都有獨立的 veth link，因此 Controller、Agent_1、Agent_2 都可以直接交換 IEEE 1905.1 封包。
+四節點拓撲採用四條指定的直接 veth link：Controller ↔ Agent_1、Controller ↔ Agent_2、Agent_1 ↔ Agent_2、Agent_1 ↔ Agent_3。Agent_1 以 `br-agent1` bridge 連接它的三個實體 veth ports，會將 IEEE 1905.1 multicast control packet 轉傳到下游 link。
 
 - Controller: 02:00:00:00:00:01
 - Agent_1: 02:00:00:00:00:02
 - Agent_2: 02:00:00:00:00:03
+- Agent_3: 02:00:00:00:00:04
 
 ```mermaid
 graph TD
     C[Controller] <-->|c_to_a1 / a1_to_c| A1[Agent_1]
     C <-->|c_to_a2 / a2_to_c| A2[Agent_2]
     A1 <-->|a1_to_a2 / a2_to_a1| A2
+    A1 <-->|a1_to_a3 / a3_to_a1| A3[Agent_3]
 ```
 
 ## 建置
@@ -80,29 +83,23 @@ sudo ./setup_mesh_env.sh setup
 
 這一步會建立：
 
-- 3 個 Network Namespace：Controller、Agent_1、Agent_2
-- 3 條 veth pair：controller ↔ agent1、controller ↔ agent2、agent1 ↔ agent2
-- 每個節點各有兩個獨立介面；不使用 Linux Bridge，避免三角形拓撲的 Layer-2 broadcast loop
+- 4 個 Network Namespace：Controller、Agent_1、Agent_2、Agent_3
+- 4 條 veth pair：controller ↔ agent1、controller ↔ agent2、agent1 ↔ agent2、agent1 ↔ agent3
+- Agent_1 以 `br-agent1` bridge 加入 `a1_to_c`、`a1_to_a2`、`a1_to_a3`，並啟用 IEEE 1905.1 multicast MAC `01:80:c2:00:00:13` 的 bridge forwarding
 - 對應的 MAC 位址配置
 
-### 3. 啟動 Controller 與兩個 Agent
+### 3. 啟動 Controller 與三個 Agent
 
 ```bash
 sudo ./setup_mesh_env.sh start
 ```
 
-啟動後，三個節點會各自發送以下訊息：
+啟動後，四個節點會各自進行 Topology Discovery、Topology Query 與 Topology Notification；Controller 會每 15 秒以 IEEE 1905.1 multicast 發送 Link Metric Query。Agent_1 的 Linux bridge 會將從 Controller 收到的 Query 轉傳至 `a1_to_a3`，因此無直接 Controller link 的 Agent_3 也能收到並立即回覆。
 
 - `Topology Discovery`
 - `Topology Query`
 - `Topology Notification`
-- `Link Metric Query`
-
-其中，多個 Agent 的拓撲通知流程如下：
-
-1. Agent_1 與 Agent_2 會各自送出 `Topology Notification`，內容包含自己的 AL MAC、角色與鄰居列表。
-2. Controller 會接收到這些通知，並回覆 `Topology Response`。
-3. 在 `logs/agent1.log`、`logs/agent2.log`、`logs/controller.log` 中可以觀察到這個交換流程。
+Agent_1 的鄰居清單會包含 Controller、Agent_2、Agent_3；Agent_3 的鄰居則只有 Agent_1。可在 `logs/agent1.log`、`logs/agent2.log`、`logs/agent3.log`、`logs/controller.log` 觀察交換流程。
 
 ### 4. 查看執行日誌
 
@@ -110,6 +107,7 @@ sudo ./setup_mesh_env.sh start
 tail -f logs/controller.log
  tail -f logs/agent1.log
  tail -f logs/agent2.log
+ tail -f logs/agent3.log
 ```
 
 ### 5. 擷取 IEEE 1905.1 封包
@@ -141,6 +139,8 @@ runtime/rssi/agent1-from-controller.rssi
 runtime/rssi/agent1-from-agent2.rssi
 runtime/rssi/agent2-from-controller.rssi
 runtime/rssi/agent2-from-agent1.rssi
+runtime/rssi/agent1-from-agent3.rssi
+runtime/rssi/agent3-from-agent1.rssi
 ```
 
 `sudo ./setup_mesh_env.sh setup` 會建立上述檔案並填入預設值，`start` 會自動把每個檔案傳給對應節點。Controller 啟動時先送出一次 `Link Metric Query`，之後每 15 秒送一次；Agent 收到 Query 時會重新讀取自己的 per-link RSSI 檔案，並立刻回覆 `Link Metric Response`。Controller 只在首次收到或 RSSI 值改變時輸出一行，例如：
@@ -161,7 +161,8 @@ sudo sh -c 'printf "%s\n" -66 > runtime/rssi/agent1-from-controller.rssi'
 ```bash
 sudo ip netns exec Agent_1 ./bin/easymesh-agent agent1 \
   --rssi-link controller -70 \
-  --rssi-link agent2 -55
+  --rssi-link agent2 -55 \
+  --rssi-link agent3 -58
 ```
 
 Controller 也只接受 per-link RSSI 設定：

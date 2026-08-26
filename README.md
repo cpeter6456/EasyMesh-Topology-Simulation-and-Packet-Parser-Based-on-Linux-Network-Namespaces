@@ -27,7 +27,7 @@
 ```mermaid
 graph TD
     C[Controller] <-->|c_to_a1 / a1_to_c| A1[Agent_1]
-    A1 <-->|a1_to_a2 / a2_to_a1| A2
+    A1 <-->|a1_to_a2 / a2_to_a1| A2[Agent_2]
     A1 <-->|a1_to_a3 / a3_to_a1| A3[Agent_3]
 ```
 
